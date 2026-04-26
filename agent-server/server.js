@@ -54,6 +54,28 @@ function waitForWebSocketOpen(ws) {
   });
 }
 
+async function connectSessionWebSocket(sessionRecord) {
+  if (sessionRecord.ws && sessionRecord.ws.readyState === WebSocket.OPEN) {
+    return sessionRecord.ws;
+  }
+
+  if (
+    sessionRecord.ws &&
+    (sessionRecord.ws.readyState === WebSocket.CONNECTING ||
+      sessionRecord.ws.readyState === WebSocket.OPEN)
+  ) {
+    await waitForWebSocketOpen(sessionRecord.ws);
+    return sessionRecord.ws;
+  }
+
+  const ws = new WebSocket(sessionRecord.wsUrl);
+  sessionRecord.ws = ws;
+  attachWebSocketLogs(sessionRecord);
+  await waitForWebSocketOpen(ws);
+  await waitForSessionConnected(ws);
+  return ws;
+}
+
 function waitForSessionConnected(ws) {
   return new Promise((resolve) => {
     const timeout = setTimeout(resolve, 10000);
@@ -82,6 +104,22 @@ function sendSessionCommand(sessionRecord, payload) {
   }
 
   sessionRecord.ws.send(JSON.stringify(payload));
+}
+
+function attachWebSocketLogs(sessionRecord) {
+  const { id: sessionId, ws } = sessionRecord;
+
+  ws.on("message", (message) => {
+    console.log(`[${sessionId}] LiveAvatar event: ${message.toString()}`);
+  });
+  ws.on("close", (code, reason) => {
+    console.log(
+      `[${sessionId}] LiveAvatar WebSocket closed: ${code} ${reason?.toString() || ""}`.trim()
+    );
+  });
+  ws.on("error", (error) => {
+    console.error(`[${sessionId}] LiveAvatar WebSocket error:`, error);
+  });
 }
 
 function chunkPcmBase64(audioBase64) {
@@ -113,24 +151,25 @@ async function joinSession(sessionInfo) {
     return existing;
   }
 
-  const room = new Room();
-  const ws = new WebSocket(wsUrl);
-
-  await Promise.all([
-    room.connect(livekitUrl, livekitAgentToken, { autoSubscribe: true }),
-    waitForWebSocketOpen(ws)
-  ]);
-  await waitForSessionConnected(ws);
-
   const sessionRecord = {
     id: sessionId,
-    room,
-    ws,
+    wsUrl,
+    livekitUrl,
+    livekitAgentToken,
+    room: new Room(),
+    ws: null,
     connectedAt: new Date().toISOString(),
     keepAliveTimer: null
   };
 
-  room
+  await Promise.all([
+    sessionRecord.room.connect(livekitUrl, livekitAgentToken, { autoSubscribe: true }),
+    connectSessionWebSocket(sessionRecord)
+  ]);
+
+  sessionRecord.connectedAt = new Date().toISOString();
+
+  sessionRecord.room
     .on(RoomEvent.ParticipantConnected, (participant) => {
       console.log(`[${sessionId}] participant connected: ${participant.identity}`);
     })
@@ -138,13 +177,6 @@ async function joinSession(sessionInfo) {
       console.log(`[${sessionId}] LiveKit room disconnected: ${reason || "unknown"}`);
       closeSession(sessionId).catch((error) => console.error(error));
     });
-
-  ws.on("message", (message) => {
-    console.log(`[${sessionId}] LiveAvatar event: ${message.toString()}`);
-  });
-  ws.on("close", () => {
-    console.log(`[${sessionId}] LiveAvatar WebSocket closed.`);
-  });
 
   sessionRecord.keepAliveTimer = setInterval(() => {
     try {
@@ -167,6 +199,8 @@ async function speak(sessionId, audioBase64) {
   if (!sessionRecord) {
     throw new Error(`No active LiveAvatar agent session for ${sessionId}.`);
   }
+
+  await connectSessionWebSocket(sessionRecord);
 
   const eventId = randomUUID();
   for (const audio of chunkPcmBase64(audioBase64)) {

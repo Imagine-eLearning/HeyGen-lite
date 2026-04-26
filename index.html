@@ -377,6 +377,7 @@
       let audioQueue = [];
       let isProcessingAudio = false;
       let isAudioCaptureActive = false;
+      let audioSegmentTimer = null;
 
       const SUPABASE_FUNCTION_URL = "https://uuwllwksbqwkxccajtog.supabase.co/functions/v1/heygen-stream";
       const LIVEKIT_AGENT_SERVER_URL = window.LIVEKIT_AGENT_SERVER_URL || "https://heygen-lite.onrender.com";
@@ -494,12 +495,39 @@
             mimeType ? { mimeType } : undefined
           );
           isAudioCaptureActive = true;
+          const audioChunks = [];
 
           mediaRecorder.ondataavailable = (event) => {
-            enqueueAudioBlob(event.data);
+            if (event.data.size > 0) {
+              audioChunks.push(event.data);
+            }
           };
 
-          mediaRecorder.start(AUDIO_CHUNK_MS);
+          mediaRecorder.onstop = () => {
+            if (audioChunks.length) {
+              const audioBlob = new Blob(audioChunks, {
+                type: mediaRecorder?.mimeType || mimeType || "audio/webm"
+              });
+              audioChunks.length = 0;
+              enqueueAudioBlob(audioBlob);
+            }
+
+            if (isAudioCaptureActive && mediaRecorder) {
+              mediaRecorder.start();
+              audioSegmentTimer = window.setTimeout(() => {
+                if (mediaRecorder && mediaRecorder.state === "recording") {
+                  mediaRecorder.stop();
+                }
+              }, AUDIO_CHUNK_MS);
+            }
+          };
+
+          mediaRecorder.start();
+          audioSegmentTimer = window.setTimeout(() => {
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+              mediaRecorder.stop();
+            }
+          }, AUDIO_CHUNK_MS);
           console.log("Audio capture started");
         } catch (error) {
           console.error("Failed to initialize audio capture:", error);
@@ -513,6 +541,10 @@
       function stopAudioCapture() {
         isAudioCaptureActive = false;
         audioQueue = [];
+        if (audioSegmentTimer) {
+          window.clearTimeout(audioSegmentTimer);
+          audioSegmentTimer = null;
+        }
 
         if (mediaRecorder && mediaRecorder.state !== "inactive") {
           mediaRecorder.stop();
