@@ -2,7 +2,7 @@
 const HEYGEN_API_KEY = Deno.env.get("HeyGen_AI_Project");
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
 const ELEVENLABS_API_KEY = Deno.env.get("ELEVENLABS_API_KEY");
-const ELEVENLABS_VOICE_ID = Deno.env.get("ELEVENLABS_VOICE_ID") || "alloy";
+const ELEVENLABS_VOICE_ID = Deno.env.get("ELEVENLABS_VOICE_ID") || "ys3XeJJA4ArWMhRpcX1D";
 
 function createJsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -108,6 +108,15 @@ Deno.serve(async (req: Request) => {
           { error: "Transcription succeeded but returned no text." },
           500
         );
+      }
+
+      if (!/[A-Za-z0-9À-ž]/.test(userTranscript)) {
+        return createJsonResponse({
+          userTranscript,
+          avatarResponse: "",
+          ignored: true,
+          success: true,
+        });
       }
 
       const completionResponse = await fetch(

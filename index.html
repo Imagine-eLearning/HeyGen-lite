@@ -441,6 +441,26 @@
             const payload = await response.clone().json();
             const sessionInfo = payload.data || payload;
             await bootstrapLiveKitAgent(sessionInfo);
+
+            /*
+             * LITE mode has a single command WebSocket. The Render agent server
+             * owns ws_url so it can send agent.speak. If the browser SDK also
+             * connects to ws_url, the provider closes one socket and the SDK
+             * disconnects the LiveKit room. Return the same start-session data to
+             * the SDK, but without ws_url, so the browser only handles media.
+             */
+            const sdkPayload = payload.data
+              ? { ...payload, data: { ...payload.data, ws_url: undefined } }
+              : { ...payload, ws_url: undefined };
+
+            const headers = new Headers(response.headers);
+            headers.set("Content-Type", "application/json");
+
+            return new Response(JSON.stringify(sdkPayload), {
+              status: response.status,
+              statusText: response.statusText,
+              headers
+            });
           }
 
           return response;
@@ -597,6 +617,7 @@
           console.log("Avatar response:", data);
 
           if (!isAudioCaptureActive || !currentSessionId) return;
+          if (data.ignored) return;
 
           // Update transcript
           appendTranscriptLine("User", data.userTranscript);
