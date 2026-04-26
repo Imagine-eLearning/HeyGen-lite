@@ -224,6 +224,7 @@ Deno.serve(async (req: Request) => {
           400
         );
       }
+      const contextId = String(body.context_id || "").trim();
 
       const response = await fetch(
         "https://api.liveavatar.com/v1/sessions/token",
@@ -236,6 +237,7 @@ Deno.serve(async (req: Request) => {
           body: JSON.stringify({
             mode: "LITE",
             avatar_id: avatarId,
+            ...(contextId ? { context_id: contextId } : {}),
           }),
         }
       );
