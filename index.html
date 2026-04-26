@@ -366,7 +366,7 @@
       let isProcessingAudio = false;
 
       const SUPABASE_FUNCTION_URL = "https://uuwllwksbqwkxccajtog.supabase.co/functions/v1/heygen-stream";
-      const LIVEKIT_AGENT_SERVER_URL = window.LIVEKIT_AGENT_SERVER_URL || "http://localhost:8788";
+      const LIVEKIT_AGENT_SERVER_URL = window.LIVEKIT_AGENT_SERVER_URL || "https://heygen-lite.onrender.com";
 
       async function getAccessToken() {
         const response = await fetch(SUPABASE_FUNCTION_URL, {
