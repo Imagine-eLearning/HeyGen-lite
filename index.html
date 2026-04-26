@@ -377,12 +377,18 @@
       let audioQueue = [];
       let isProcessingAudio = false;
       let isAudioCaptureActive = false;
+      let isLearnerMicOpen = false;
       let audioSegmentTimer = null;
+      let resumeMicTimer = null;
+      let discardCurrentAudioSegment = false;
 
       const SUPABASE_FUNCTION_URL = "https://uuwllwksbqwkxccajtog.supabase.co/functions/v1/heygen-stream";
       const LIVEKIT_AGENT_SERVER_URL = window.LIVEKIT_AGENT_SERVER_URL || "https://heygen-lite.onrender.com";
       const AUDIO_CHUNK_MS = 5000;
       const MIN_AUDIO_BLOB_BYTES = 2048;
+      const PCM_SAMPLE_RATE = 24000;
+      const PCM_BYTES_PER_SAMPLE = 2;
+      const AVATAR_SPEECH_BUFFER_MS = 1200;
 
       async function getAccessToken() {
         const response = await fetch(SUPABASE_FUNCTION_URL, {
@@ -486,12 +492,12 @@
       }
 
       function enqueueAudioBlob(audioBlob) {
-        if (!isAudioCaptureActive || !currentSessionToken || !currentSessionId) return;
+        if (!isAudioCaptureActive || !isLearnerMicOpen || !currentSessionToken || !currentSessionId) return;
         if (!audioBlob || audioBlob.size < MIN_AUDIO_BLOB_BYTES) return;
 
         const reader = new FileReader();
         reader.onloadend = () => {
-          if (!isAudioCaptureActive || !currentSessionId) return;
+          if (!isAudioCaptureActive || !isLearnerMicOpen || !currentSessionId) return;
 
           const base64Audio = String(reader.result || "").split(",")[1];
           if (!base64Audio) return;
@@ -505,6 +511,64 @@
         reader.readAsDataURL(audioBlob);
       }
 
+      function scheduleAudioSegmentStop() {
+        if (audioSegmentTimer) {
+          window.clearTimeout(audioSegmentTimer);
+        }
+
+        audioSegmentTimer = window.setTimeout(() => {
+          if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+          }
+        }, AUDIO_CHUNK_MS);
+      }
+
+      function pauseLearnerMic(discardCurrentSegment = true) {
+        isLearnerMicOpen = false;
+        audioQueue = [];
+
+        if (resumeMicTimer) {
+          window.clearTimeout(resumeMicTimer);
+          resumeMicTimer = null;
+        }
+
+        if (audioSegmentTimer) {
+          window.clearTimeout(audioSegmentTimer);
+          audioSegmentTimer = null;
+        }
+
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+          discardCurrentAudioSegment = discardCurrentSegment;
+          mediaRecorder.stop();
+        }
+      }
+
+      function resumeLearnerMic(delayMs = 0) {
+        if (!isAudioCaptureActive || !mediaRecorder) return;
+
+        if (resumeMicTimer) {
+          window.clearTimeout(resumeMicTimer);
+        }
+
+        resumeMicTimer = window.setTimeout(() => {
+          if (!isAudioCaptureActive || !mediaRecorder) return;
+
+          isLearnerMicOpen = true;
+          discardCurrentAudioSegment = false;
+
+          if (mediaRecorder.state === "inactive") {
+            mediaRecorder.start();
+            scheduleAudioSegmentStop();
+          }
+        }, delayMs);
+      }
+
+      function getPcmAudioDurationMs(audioBase64) {
+        const padding = audioBase64.endsWith("==") ? 2 : audioBase64.endsWith("=") ? 1 : 0;
+        const byteLength = Math.max(0, Math.floor((audioBase64.length * 3) / 4) - padding);
+        return Math.ceil((byteLength / (PCM_SAMPLE_RATE * PCM_BYTES_PER_SAMPLE)) * 1000);
+      }
+
       async function initializeAudioCapture() {
         try {
           mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -516,6 +580,7 @@
             mimeType ? { mimeType } : undefined
           );
           isAudioCaptureActive = true;
+          isLearnerMicOpen = true;
           const audioChunks = [];
 
           mediaRecorder.ondataavailable = (event) => {
@@ -525,6 +590,11 @@
           };
 
           mediaRecorder.onstop = () => {
+            if (discardCurrentAudioSegment) {
+              audioChunks.length = 0;
+              discardCurrentAudioSegment = false;
+            }
+
             if (audioChunks.length) {
               const audioBlob = new Blob(audioChunks, {
                 type: mediaRecorder?.mimeType || mimeType || "audio/webm"
@@ -533,22 +603,14 @@
               enqueueAudioBlob(audioBlob);
             }
 
-            if (isAudioCaptureActive && mediaRecorder) {
+            if (isAudioCaptureActive && isLearnerMicOpen && mediaRecorder) {
               mediaRecorder.start();
-              audioSegmentTimer = window.setTimeout(() => {
-                if (mediaRecorder && mediaRecorder.state === "recording") {
-                  mediaRecorder.stop();
-                }
-              }, AUDIO_CHUNK_MS);
+              scheduleAudioSegmentStop();
             }
           };
 
           mediaRecorder.start();
-          audioSegmentTimer = window.setTimeout(() => {
-            if (mediaRecorder && mediaRecorder.state === "recording") {
-              mediaRecorder.stop();
-            }
-          }, AUDIO_CHUNK_MS);
+          scheduleAudioSegmentStop();
           console.log("Audio capture started");
         } catch (error) {
           console.error("Failed to initialize audio capture:", error);
@@ -561,7 +623,12 @@
        */
       function stopAudioCapture() {
         isAudioCaptureActive = false;
+        isLearnerMicOpen = false;
         audioQueue = [];
+        if (resumeMicTimer) {
+          window.clearTimeout(resumeMicTimer);
+          resumeMicTimer = null;
+        }
         if (audioSegmentTimer) {
           window.clearTimeout(audioSegmentTimer);
           audioSegmentTimer = null;
@@ -586,11 +653,12 @@
        * Process audio chunks from queue
        */
       async function processAudioQueue() {
-        if (!isAudioCaptureActive || !currentSessionId) return;
+        if (!isAudioCaptureActive || !isLearnerMicOpen || !currentSessionId) return;
         if (isProcessingAudio || audioQueue.length === 0) return;
 
         isProcessingAudio = true;
         const audioRequest = audioQueue.shift();
+        pauseLearnerMic();
 
         try {
           const response = await fetch(SUPABASE_FUNCTION_URL, {
@@ -609,6 +677,7 @@
             const errorText = await response.text();
             console.error(`Audio processing failed: ${response.status} ${errorText}`);
             livePreviewEl.textContent = `Error processing audio: ${response.status}`;
+            resumeLearnerMic(1000);
             isProcessingAudio = false;
             processAudioQueue(); // Try next chunk
             return;
@@ -618,7 +687,10 @@
           console.log("Avatar response:", data);
 
           if (!isAudioCaptureActive || !currentSessionId) return;
-          if (data.ignored) return;
+          if (data.ignored) {
+            resumeLearnerMic();
+            return;
+          }
 
           // Update transcript
           appendTranscriptLine("User", data.userTranscript);
@@ -626,15 +698,19 @@
 
           if (data.audioBase64) {
             await streamAudioToLiveAvatar(data.audioBase64);
+            resumeLearnerMic(getPcmAudioDurationMs(data.audioBase64) + AVATAR_SPEECH_BUFFER_MS);
+          } else {
+            resumeLearnerMic();
           }
 
           livePreviewEl.textContent = "";
         } catch (error) {
           console.error("Error processing audio:", error);
           livePreviewEl.textContent = error.message;
+          resumeLearnerMic(1000);
         } finally {
           isProcessingAudio = false;
-          if (isAudioCaptureActive && currentSessionId) {
+          if (isAudioCaptureActive && isLearnerMicOpen && currentSessionId) {
             processAudioQueue(); // Process next chunk if any
           }
         }
@@ -830,25 +906,10 @@
           handleSessionEnded();
         });
 
-        activeSession.on(AgentEventsEnum.USER_TRANSCRIPTION_CHUNK, (event) => {
-          const text = getEventText(event);
-          if (text) livePreviewEl.textContent = `User: ${text}`;
-        });
-
-        activeSession.on(AgentEventsEnum.AVATAR_TRANSCRIPTION_CHUNK, (event) => {
-          const text = getEventText(event);
-          if (text) livePreviewEl.textContent = `Avatar: ${text}`;
-        });
-
-        activeSession.on(AgentEventsEnum.USER_TRANSCRIPTION, (event) => {
-          appendTranscriptLine("User", getEventText(event));
-          livePreviewEl.textContent = "";
-        });
-
-        activeSession.on(AgentEventsEnum.AVATAR_TRANSCRIPTION, (event) => {
-          appendTranscriptLine("Avatar", getEventText(event));
-          livePreviewEl.textContent = "";
-        });
+        activeSession.on(AgentEventsEnum.USER_TRANSCRIPTION_CHUNK, () => {});
+        activeSession.on(AgentEventsEnum.AVATAR_TRANSCRIPTION_CHUNK, () => {});
+        activeSession.on(AgentEventsEnum.USER_TRANSCRIPTION, () => {});
+        activeSession.on(AgentEventsEnum.AVATAR_TRANSCRIPTION, () => {});
 
         activeSession.on(AgentEventsEnum.SESSION_STOPPED, () => {
           handleSessionEnded();
