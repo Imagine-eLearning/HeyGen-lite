@@ -237,7 +237,7 @@ Deno.serve(async (req: Request) => {
           body: JSON.stringify({
             mode: "LITE",
             avatar_id: avatarId,
-            ...(contextId ? { context_id: contextId } : {}),
+            ...(contextId ? { avatar_persona: { context_id: contextId } } : {}),
           }),
         }
       );
