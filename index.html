@@ -376,9 +376,12 @@
       let currentSessionId = null;
       let audioQueue = [];
       let isProcessingAudio = false;
+      let isAudioCaptureActive = false;
 
       const SUPABASE_FUNCTION_URL = "https://uuwllwksbqwkxccajtog.supabase.co/functions/v1/heygen-stream";
       const LIVEKIT_AGENT_SERVER_URL = window.LIVEKIT_AGENT_SERVER_URL || "https://heygen-lite.onrender.com";
+      const AUDIO_CHUNK_MS = 5000;
+      const MIN_AUDIO_BLOB_BYTES = 2048;
 
       async function getAccessToken() {
         const response = await fetch(SUPABASE_FUNCTION_URL, {
@@ -449,38 +452,54 @@
         }
       }
 
-      /*
-       * Capture audio from microphone
-       */
+      function getSupportedAudioMimeType() {
+        const preferredTypes = [
+          "audio/webm;codecs=opus",
+          "audio/webm",
+          "audio/mp4",
+          "audio/wav"
+        ];
+
+        return preferredTypes.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+      }
+
+      function enqueueAudioBlob(audioBlob) {
+        if (!isAudioCaptureActive || !currentSessionToken || !currentSessionId) return;
+        if (!audioBlob || audioBlob.size < MIN_AUDIO_BLOB_BYTES) return;
+
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          if (!isAudioCaptureActive || !currentSessionId) return;
+
+          const base64Audio = String(reader.result || "").split(",")[1];
+          if (!base64Audio) return;
+
+          audioQueue.push({
+            audio: base64Audio,
+            mimeType: audioBlob.type || "audio/webm"
+          });
+          processAudioQueue();
+        };
+        reader.readAsDataURL(audioBlob);
+      }
+
       async function initializeAudioCapture() {
         try {
           mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
           audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-          mediaRecorder = new MediaRecorder(mediaStream);
-          const audioChunks = [];
+          const mimeType = getSupportedAudioMimeType();
+          mediaRecorder = new MediaRecorder(
+            mediaStream,
+            mimeType ? { mimeType } : undefined
+          );
+          isAudioCaptureActive = true;
 
           mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-              audioChunks.push(event.data);
-            }
+            enqueueAudioBlob(event.data);
           };
 
-          mediaRecorder.onstop = async () => {
-            const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
-            audioChunks.length = 0; // Clear for next recording
-
-            // Convert blob to base64
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              const base64Audio = reader.result.split(",")[1];
-              audioQueue.push(base64Audio);
-              processAudioQueue();
-            };
-            reader.readAsDataURL(audioBlob);
-          };
-
-          mediaRecorder.start();
+          mediaRecorder.start(AUDIO_CHUNK_MS);
           console.log("Audio capture started");
         } catch (error) {
           console.error("Failed to initialize audio capture:", error);
@@ -492,6 +511,9 @@
        * Stop audio capture
        */
       function stopAudioCapture() {
+        isAudioCaptureActive = false;
+        audioQueue = [];
+
         if (mediaRecorder && mediaRecorder.state !== "inactive") {
           mediaRecorder.stop();
         }
@@ -501,6 +523,9 @@
         if (audioContext) {
           audioContext.close();
         }
+        mediaRecorder = null;
+        mediaStream = null;
+        audioContext = null;
         console.log("Audio capture stopped");
       }
 
@@ -508,10 +533,11 @@
        * Process audio chunks from queue
        */
       async function processAudioQueue() {
+        if (!isAudioCaptureActive || !currentSessionId) return;
         if (isProcessingAudio || audioQueue.length === 0) return;
 
         isProcessingAudio = true;
-        const audioBase64 = audioQueue.shift();
+        const audioRequest = audioQueue.shift();
 
         try {
           const response = await fetch(SUPABASE_FUNCTION_URL, {
@@ -520,7 +546,8 @@
               "Content-Type": "application/json"
             },
             body: JSON.stringify({
-              audio: audioBase64,
+              audio: audioRequest.audio,
+              audioMimeType: audioRequest.mimeType,
               sessionToken: currentSessionToken
             })
           });
@@ -537,6 +564,8 @@
           const data = await response.json();
           console.log("Avatar response:", data);
 
+          if (!isAudioCaptureActive || !currentSessionId) return;
+
           // Update transcript
           appendTranscriptLine("User", data.userTranscript);
           appendTranscriptLine("Avatar", data.avatarResponse);
@@ -551,7 +580,9 @@
           livePreviewEl.textContent = error.message;
         } finally {
           isProcessingAudio = false;
-          processAudioQueue(); // Process next chunk if any
+          if (isAudioCaptureActive && currentSessionId) {
+            processAudioQueue(); // Process next chunk if any
+          }
         }
       }
 
@@ -788,9 +819,6 @@
             throw new Error("The token endpoint did not return sessionToken, accessToken, or token.");
           }
 
-          // Initialize audio capture
-          await initializeAudioCapture();
-
           session = new LiveAvatarSession(token, {
             voiceChat: true,
             apiUrl: "https://api.liveavatar.com"
@@ -799,6 +827,7 @@
           bindSessionEvents(session);
           setStatus("Starting");
           await startSessionWithAgentBootstrap(session);
+          await initializeAudioCapture();
           setButtons(true);
         } catch (error) {
           console.error(error);

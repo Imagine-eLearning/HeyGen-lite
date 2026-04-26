@@ -32,6 +32,14 @@ function encodeBase64(bytes: Uint8Array) {
   return btoa(binary);
 }
 
+function getAudioFilename(mimeType: string) {
+  if (mimeType.includes("webm")) return "input.webm";
+  if (mimeType.includes("mp4")) return "input.mp4";
+  if (mimeType.includes("mpeg")) return "input.mp3";
+  if (mimeType.includes("wav")) return "input.wav";
+  return "input.webm";
+}
+
 // ===== MAIN HANDLER =====
 Deno.serve(async (req: Request) => {
   // ===== CORS =====
@@ -64,10 +72,11 @@ Deno.serve(async (req: Request) => {
         );
       }
 
+      const audioMimeType = String(body.audioMimeType || "audio/webm");
       const audioBytes = decodeBase64(String(body.audio));
-      const audioBlob = new Blob([audioBytes], { type: "audio/wav" });
+      const audioBlob = new Blob([audioBytes], { type: audioMimeType });
       const transcriptionForm = new FormData();
-      transcriptionForm.append("file", audioBlob, "input.wav");
+      transcriptionForm.append("file", audioBlob, getAudioFilename(audioMimeType));
       transcriptionForm.append("model", "whisper-1");
 
       const transcriptionResponse = await fetch(
