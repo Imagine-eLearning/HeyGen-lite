@@ -342,6 +342,18 @@
         SessionState
       } from "https://cdn.jsdelivr.net/npm/@heygen/liveavatar-web-sdk@0.0.16/+esm";
 
+      /*
+       * SDK compatibility note:
+       * @heygen/liveavatar-web-sdk 0.0.16 waits for a participant named
+       * liveavatar-agent-<session_id>. Current LITE rooms may expose the
+       * managed/agent participant as "convai" instead, even though the session
+       * WebSocket is ready for LITE commands. Skipping this hardcoded wait keeps
+       * the session connected so our hosted agent bridge can send agent.speak.
+       */
+      if (typeof LiveAvatarSession?.prototype?.waitForRequiredParticipants === "function") {
+        LiveAvatarSession.prototype.waitForRequiredParticipants = async () => {};
+      }
+
       const STORAGE_KEY = "liveAvatarTranscript";
 
       const avatarVideo = document.querySelector("#avatarVideo");
