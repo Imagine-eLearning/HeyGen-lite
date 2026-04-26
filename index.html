@@ -1,0 +1,845 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Live Avatar</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --panel: #ffffff;
+        --panel-soft: #f0f3f8;
+        --text: #182033;
+        --muted: #63708a;
+        --line: #dfe5ef;
+        --primary: #136f63;
+        --primary-hover: #0f5f55;
+        --danger: #aa2d2d;
+        --danger-hover: #8e2525;
+        --shadow: 0 10px 30px rgba(20, 30, 50, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      body {
+        padding: 16px;
+      }
+
+      .app {
+        width: min(100%, 980px);
+        margin: 0 auto;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.8fr);
+        gap: 14px;
+        align-items: stretch;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+        min-width: 0;
+      }
+
+      .avatar-panel {
+        display: flex;
+        min-height: 420px;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .avatar-stage {
+        position: relative;
+        flex: 1;
+        min-height: 320px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(0, 0, 0, 0.12)),
+          #1f2633;
+      }
+
+      .avatar-stage video {
+        width: 100%;
+        height: 100%;
+        min-height: 320px;
+        display: block;
+        object-fit: cover;
+        background: #111827;
+      }
+
+      .empty-state {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        color: #d7deea;
+        text-align: center;
+        pointer-events: none;
+      }
+
+      .empty-state strong {
+        display: block;
+        margin-bottom: 6px;
+        color: #ffffff;
+        font-size: 1rem;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px;
+        border-top: 1px solid var(--line);
+      }
+
+      .button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 6px;
+        color: #ffffff;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 650;
+        min-height: 40px;
+        padding: 0 14px;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.48;
+      }
+
+      .primary {
+        background: var(--primary);
+      }
+
+      .primary:not(:disabled):hover {
+        background: var(--primary-hover);
+      }
+
+      .danger {
+        background: var(--danger);
+      }
+
+      .danger:not(:disabled):hover {
+        background: var(--danger-hover);
+      }
+
+      .secondary {
+        border: 1px solid var(--line);
+        background: #ffffff;
+        color: var(--text);
+      }
+
+      .secondary:not(:disabled):hover {
+        background: var(--panel-soft);
+      }
+
+      .status {
+        min-width: 120px;
+        color: var(--muted);
+        font-size: 0.9rem;
+        text-align: right;
+      }
+
+      .transcript-panel {
+        display: flex;
+        min-height: 420px;
+        flex-direction: column;
+      }
+
+      .panel-header {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      h1,
+      h2 {
+        margin: 0;
+        letter-spacing: 0;
+      }
+
+      h1 {
+        margin-bottom: 12px;
+        font-size: clamp(1.25rem, 2.5vw, 1.6rem);
+      }
+
+      h2 {
+        font-size: 1rem;
+      }
+
+      .transcript {
+        height: 330px;
+        overflow-y: auto;
+        padding: 12px;
+        background: #fbfcfe;
+        border-bottom: 1px solid var(--line);
+        font-size: 0.95rem;
+        line-height: 1.45;
+        white-space: pre-wrap;
+      }
+
+      .line {
+        margin: 0 0 10px;
+      }
+
+      .line:last-child {
+        margin-bottom: 0;
+      }
+
+      .speaker {
+        font-weight: 750;
+      }
+
+      .user .speaker {
+        color: #1e5e95;
+      }
+
+      .avatar .speaker {
+        color: #7d3d00;
+      }
+
+      .transcript-empty {
+        color: var(--muted);
+      }
+
+      .live-preview,
+      .notice {
+        padding: 10px 12px;
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      .live-preview {
+        min-height: 42px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .notice {
+        margin: 12px 0 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+      }
+
+      @media (max-width: 760px) {
+        body {
+          padding: 10px;
+        }
+
+        .shell {
+          grid-template-columns: 1fr;
+        }
+
+        .avatar-panel,
+        .transcript-panel {
+          min-height: auto;
+        }
+
+        .avatar-stage,
+        .avatar-stage video {
+          min-height: 260px;
+        }
+
+        .transcript {
+          height: 260px;
+        }
+
+        .controls,
+        .panel-header {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        .button-row,
+        button {
+          width: 100%;
+        }
+
+        .status {
+          text-align: left;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <h1>Live Avatar</h1>
+
+      <section class="shell" aria-label="Live avatar session">
+        <div class="panel avatar-panel">
+          <div class="avatar-stage">
+            <video id="avatarVideo" autoplay playsinline></video>
+            <div id="emptyState" class="empty-state">
+              <div>
+                <strong>Avatar session ready</strong>
+                Select Start Session when the learner is ready to begin.
+              </div>
+            </div>
+          </div>
+
+          <div class="controls">
+            <div class="button-row">
+              <button id="startButton" class="primary" type="button">Start Session</button>
+              <button id="endButton" class="danger" type="button" disabled>End Session</button>
+            </div>
+            <div id="status" class="status" role="status" aria-live="polite">Idle</div>
+          </div>
+        </div>
+
+        <aside class="panel transcript-panel" aria-label="Transcript">
+          <div class="panel-header">
+            <h2>Transcript</h2>
+            <button id="downloadButton" class="secondary" type="button">Download Transcript</button>
+          </div>
+          <div id="livePreview" class="live-preview" aria-live="polite"></div>
+          <div id="transcript" class="transcript" tabindex="0" aria-live="polite">
+            <p class="transcript-empty">Transcript lines will appear here.</p>
+          </div>
+        </aside>
+      </section>
+
+      <p class="notice">
+        Token setup: connect <code>getAccessToken()</code> to a secure backend endpoint before publishing. Do not place HeyGen or LiveAvatar API keys in this HTML file.
+      </p>
+    </main>
+
+    <script type="module">
+      import {
+        AgentEventsEnum,
+        LiveAvatarSession,
+        SessionEvent,
+        SessionState
+      } from "https://cdn.jsdelivr.net/npm/@heygen/liveavatar-web-sdk@0.0.16/+esm";
+
+      const STORAGE_KEY = "liveAvatarTranscript";
+
+      const avatarVideo = document.querySelector("#avatarVideo");
+      const emptyState = document.querySelector("#emptyState");
+      const startButton = document.querySelector("#startButton");
+      const endButton = document.querySelector("#endButton");
+      const downloadButton = document.querySelector("#downloadButton");
+      const statusEl = document.querySelector("#status");
+      const transcriptEl = document.querySelector("#transcript");
+      const livePreviewEl = document.querySelector("#livePreview");
+
+      let session = null;
+      let turns = [];
+      let transcriptText = "";
+      let sessionEnding = false;
+      let mediaRecorder = null;
+      let audioContext = null;
+      let mediaStream = null;
+      let currentSessionToken = null;
+      let currentSessionId = null;
+      let audioQueue = [];
+      let isProcessingAudio = false;
+
+      const SUPABASE_FUNCTION_URL = "https://uuwllwksbqwkxccajtog.supabase.co/functions/v1/heygen-stream";
+      const LIVEKIT_AGENT_SERVER_URL = window.LIVEKIT_AGENT_SERVER_URL || "http://localhost:8788";
+
+      async function getAccessToken() {
+        const response = await fetch(SUPABASE_FUNCTION_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            mode: "LITE",
+            avatar_id: "65f9e3c9-d48b-4118-b73a-4ae2e3cbb8f0"
+          })
+        });
+
+        if (!response.ok) {
+          response.clone().json().then((errorJson) => {
+            console.error("Token fetch failed response JSON:", errorJson);
+          }).catch(() => {});
+          const errorText = await response.text();
+          throw new Error(`Token fetch failed: ${response.status} ${errorText}`);
+        }
+
+        const data = await response.json();
+        currentSessionToken = data.sessionToken || data.session_token || data.token;
+        return currentSessionToken;
+      }
+
+      async function bootstrapLiveKitAgent(sessionInfo) {
+        if (!sessionInfo?.session_id) {
+          throw new Error("LiveAvatar start response did not include session_id.");
+        }
+
+        currentSessionId = sessionInfo.session_id;
+
+        const response = await fetch(`${LIVEKIT_AGENT_SERVER_URL}/sessions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ sessionInfo })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`LiveKit agent bootstrap failed: ${response.status} ${errorText}`);
+        }
+      }
+
+      async function startSessionWithAgentBootstrap(activeSession) {
+        const originalFetch = window.fetch.bind(window);
+
+        window.fetch = async (...args) => {
+          const response = await originalFetch(...args);
+          const requestUrl = String(args[0]?.url || args[0] || "");
+
+          if (requestUrl.includes("/v1/sessions/start") && response.ok) {
+            const payload = await response.clone().json();
+            const sessionInfo = payload.data || payload;
+            await bootstrapLiveKitAgent(sessionInfo);
+          }
+
+          return response;
+        };
+
+        try {
+          await activeSession.start();
+        } finally {
+          window.fetch = originalFetch;
+        }
+      }
+
+      /*
+       * Capture audio from microphone
+       */
+      async function initializeAudioCapture() {
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+          mediaRecorder = new MediaRecorder(mediaStream);
+          const audioChunks = [];
+
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+              audioChunks.push(event.data);
+            }
+          };
+
+          mediaRecorder.onstop = async () => {
+            const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
+            audioChunks.length = 0; // Clear for next recording
+
+            // Convert blob to base64
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const base64Audio = reader.result.split(",")[1];
+              audioQueue.push(base64Audio);
+              processAudioQueue();
+            };
+            reader.readAsDataURL(audioBlob);
+          };
+
+          mediaRecorder.start();
+          console.log("Audio capture started");
+        } catch (error) {
+          console.error("Failed to initialize audio capture:", error);
+          livePreviewEl.textContent = "Microphone access denied. Please enable it in your browser settings.";
+        }
+      }
+
+      /*
+       * Stop audio capture
+       */
+      function stopAudioCapture() {
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+          mediaRecorder.stop();
+        }
+        if (mediaStream) {
+          mediaStream.getTracks().forEach(track => track.stop());
+        }
+        if (audioContext) {
+          audioContext.close();
+        }
+        console.log("Audio capture stopped");
+      }
+
+      /*
+       * Process audio chunks from queue
+       */
+      async function processAudioQueue() {
+        if (isProcessingAudio || audioQueue.length === 0) return;
+
+        isProcessingAudio = true;
+        const audioBase64 = audioQueue.shift();
+
+        try {
+          const response = await fetch(SUPABASE_FUNCTION_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              audio: audioBase64,
+              sessionToken: currentSessionToken
+            })
+          });
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`Audio processing failed: ${response.status} ${errorText}`);
+            livePreviewEl.textContent = `Error processing audio: ${response.status}`;
+            isProcessingAudio = false;
+            processAudioQueue(); // Try next chunk
+            return;
+          }
+
+          const data = await response.json();
+          console.log("Avatar response:", data);
+
+          // Update transcript
+          appendTranscriptLine("User", data.userTranscript);
+          appendTranscriptLine("Avatar", data.avatarResponse);
+
+          if (data.audioBase64) {
+            await streamAudioToLiveAvatar(data.audioBase64);
+          }
+
+          livePreviewEl.textContent = "";
+        } catch (error) {
+          console.error("Error processing audio:", error);
+          livePreviewEl.textContent = error.message;
+        } finally {
+          isProcessingAudio = false;
+          processAudioQueue(); // Process next chunk if any
+        }
+      }
+
+      async function streamAudioToLiveAvatar(audioBase64) {
+        if (!currentSessionId) {
+          throw new Error("No active LiveAvatar session ID is available for audio streaming.");
+        }
+
+        const response = await fetch(
+          `${LIVEKIT_AGENT_SERVER_URL}/sessions/${encodeURIComponent(currentSessionId)}/speak`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ audioBase64 })
+          }
+        );
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`LiveAvatar audio streaming failed: ${response.status} ${errorText}`);
+        }
+      }
+
+      async function stopLiveKitAgent() {
+        if (!currentSessionId) return;
+
+        try {
+          await fetch(`${LIVEKIT_AGENT_SERVER_URL}/sessions/${encodeURIComponent(currentSessionId)}`, {
+            method: "DELETE"
+          });
+        } catch (error) {
+          console.warn("Could not stop LiveKit agent session:", error);
+        } finally {
+          currentSessionId = null;
+        }
+      }
+
+      function setStatus(message) {
+        statusEl.textContent = message;
+      }
+
+      function setButtons(isActive, isBusy = false) {
+        startButton.disabled = isActive || isBusy;
+        endButton.disabled = !isActive || isBusy;
+      }
+
+      function clearTranscript() {
+        turns = [];
+        transcriptText = "";
+        livePreviewEl.textContent = "";
+        transcriptEl.innerHTML = '<p class="transcript-empty">Transcript lines will appear here.</p>';
+      }
+
+      function getEventText(event) {
+        return String(event?.text || event?.data?.text || event?.transcript || "").trim();
+      }
+
+      function appendTranscriptLine(speaker, text) {
+        const cleanText = String(text || "").trim();
+        if (!cleanText) return;
+
+        const timestamp = new Date().toISOString();
+        turns.push({ speaker, text: cleanText, timestamp });
+
+        const line = `${speaker}: ${cleanText}`;
+        transcriptText = transcriptText ? `${transcriptText}\n${line}` : line;
+
+        const placeholder = transcriptEl.querySelector(".transcript-empty");
+        if (placeholder) placeholder.remove();
+
+        const row = document.createElement("p");
+        row.className = `line ${speaker.toLowerCase()}`;
+
+        const label = document.createElement("span");
+        label.className = "speaker";
+        label.textContent = `${speaker}: `;
+
+        row.append(label, document.createTextNode(cleanText));
+        transcriptEl.append(row);
+        transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      }
+
+      function getTranscriptPayload() {
+        return {
+          savedAt: new Date().toISOString(),
+          transcriptText,
+          turns: [...turns]
+        };
+      }
+
+      function saveTranscript() {
+        const payload = getTranscriptPayload();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+        return payload;
+      }
+
+      function loadSavedTranscript() {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (!saved) return;
+
+        try {
+          const payload = JSON.parse(saved);
+          turns = Array.isArray(payload.turns) ? payload.turns : [];
+          transcriptText = payload.transcriptText || "";
+
+          if (!transcriptText && turns.length) {
+            transcriptText = turns.map((turn) => `${turn.speaker}: ${turn.text}`).join("\n");
+          }
+
+          if (!transcriptText) return;
+
+          transcriptEl.innerHTML = "";
+          turns.forEach((turn) => {
+            const row = document.createElement("p");
+            row.className = `line ${String(turn.speaker || "").toLowerCase()}`;
+
+            const label = document.createElement("span");
+            label.className = "speaker";
+            label.textContent = `${turn.speaker}: `;
+
+            row.append(label, document.createTextNode(turn.text || ""));
+            transcriptEl.append(row);
+          });
+
+          livePreviewEl.textContent = `Recovered saved transcript from ${payload.savedAt || "local storage"}.`;
+          transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        } catch (error) {
+          console.warn("Could not recover saved transcript:", error);
+        }
+      }
+
+      function downloadTranscript() {
+        let payload = getTranscriptPayload();
+
+        if (!payload.transcriptText) {
+          const saved = localStorage.getItem(STORAGE_KEY);
+          if (saved) {
+            try {
+              payload = JSON.parse(saved);
+            } catch (error) {
+              console.warn("Could not parse saved transcript:", error);
+            }
+          }
+        }
+
+        const body = [
+          `Saved at: ${payload.savedAt || new Date().toISOString()}`,
+          "",
+          payload.transcriptText || "No transcript has been captured yet."
+        ].join("\n");
+
+        const blob = new Blob([body], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `live-avatar-transcript-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      function bindSessionEvents(activeSession) {
+        activeSession.on(SessionEvent.SESSION_STATE_CHANGED, (state) => {
+          if (state === SessionState.CONNECTED || state === "CONNECTED") {
+            setStatus("Connected");
+            setButtons(true);
+          } else if (state === SessionState.CONNECTING || state === "CONNECTING") {
+            setStatus("Connecting");
+          } else if (state === SessionState.DISCONNECTING || state === "DISCONNECTING") {
+            setStatus("Ending");
+          } else if (state === SessionState.DISCONNECTED || state === "DISCONNECTED") {
+            handleSessionEnded();
+          }
+        });
+
+        activeSession.on(SessionEvent.SESSION_STREAM_READY, async () => {
+          emptyState.hidden = true;
+          activeSession.attach(avatarVideo);
+
+          try {
+            await avatarVideo.play();
+          } catch (error) {
+            console.warn("Browser blocked autoplay until user interaction:", error);
+          }
+        });
+
+        activeSession.on(SessionEvent.SESSION_DISCONNECTED, () => {
+          handleSessionEnded();
+        });
+
+        activeSession.on(AgentEventsEnum.USER_TRANSCRIPTION_CHUNK, (event) => {
+          const text = getEventText(event);
+          if (text) livePreviewEl.textContent = `User: ${text}`;
+        });
+
+        activeSession.on(AgentEventsEnum.AVATAR_TRANSCRIPTION_CHUNK, (event) => {
+          const text = getEventText(event);
+          if (text) livePreviewEl.textContent = `Avatar: ${text}`;
+        });
+
+        activeSession.on(AgentEventsEnum.USER_TRANSCRIPTION, (event) => {
+          appendTranscriptLine("User", getEventText(event));
+          livePreviewEl.textContent = "";
+        });
+
+        activeSession.on(AgentEventsEnum.AVATAR_TRANSCRIPTION, (event) => {
+          appendTranscriptLine("Avatar", getEventText(event));
+          livePreviewEl.textContent = "";
+        });
+
+        activeSession.on(AgentEventsEnum.SESSION_STOPPED, () => {
+          handleSessionEnded();
+        });
+
+        /*
+         * SDK note: these event names match @heygen/liveavatar-web-sdk 0.0.16.
+         * If you upgrade the SDK and transcript events change, adjust the
+         * AgentEventsEnum handlers above to the names in the official package.
+         */
+      }
+
+      async function startSession() {
+        clearTranscript();
+        sessionEnding = false;
+        setButtons(false, true);
+        setStatus("Requesting token");
+
+        try {
+          const token = await getAccessToken();
+          if (!token) {
+            throw new Error("The token endpoint did not return sessionToken, accessToken, or token.");
+          }
+
+          // Initialize audio capture
+          await initializeAudioCapture();
+
+          session = new LiveAvatarSession(token, {
+            voiceChat: true,
+            apiUrl: "https://api.liveavatar.com"
+          });
+
+          bindSessionEvents(session);
+          setStatus("Starting");
+          await startSessionWithAgentBootstrap(session);
+          setButtons(true);
+        } catch (error) {
+          console.error(error);
+          setStatus("Start failed");
+          livePreviewEl.textContent = error.message || "Could not start the avatar session.";
+          setButtons(false);
+          emptyState.hidden = false;
+          session = null;
+          stopAudioCapture();
+        }
+      }
+
+      async function endSession() {
+        if (!session || sessionEnding) return;
+
+        sessionEnding = true;
+        setButtons(true, true);
+        setStatus("Ending");
+        stopAudioCapture();
+        await stopLiveKitAgent();
+
+        try {
+          await session.stop();
+        } catch (error) {
+          console.warn("Session stop failed; saving transcript anyway:", error);
+        } finally {
+          handleSessionEnded();
+        }
+      }
+
+      function handleSessionEnded() {
+        if (!session && !sessionEnding) return;
+
+        saveTranscript();
+        session = null;
+        sessionEnding = false;
+        avatarVideo.srcObject = null;
+        emptyState.hidden = false;
+        setButtons(false);
+        setStatus("Ended");
+        livePreviewEl.textContent = "Transcript saved to localStorage as liveAvatarTranscript.";
+      }
+
+      startButton.addEventListener("click", startSession);
+      endButton.addEventListener("click", endSession);
+      downloadButton.addEventListener("click", downloadTranscript);
+
+      window.addEventListener("pagehide", () => {
+        if (turns.length || transcriptText) saveTranscript();
+      });
+
+      loadSavedTranscript();
+      setButtons(false);
+    </script>
+  </body>
+</html>

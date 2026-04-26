@@ -1,0 +1,13 @@
+{
+  "name": "liveavatar-lite-agent-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@livekit/rtc-node": "^0.13.25",
+    "ws": "^8.18.0"
+  }
+}

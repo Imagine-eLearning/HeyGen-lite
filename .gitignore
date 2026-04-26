@@ -1,0 +1,8 @@
+node_modules/
+agent-server/node_modules/
+.npm-cache/
+agent-server/.npm-cache/
+*.log
+.env
+.env.*
+!.env.example
