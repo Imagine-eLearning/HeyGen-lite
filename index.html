@@ -374,6 +374,9 @@
       let mediaStream = null;
       let currentSessionToken = null;
       let currentSessionId = null;
+      let usageSessionToken = null;
+      let usageReported = false;
+      let usageReadyAt = null;
       let audioQueue = [];
       let isProcessingAudio = false;
       let isAudioCaptureActive = false;
@@ -389,6 +392,20 @@
       const PCM_SAMPLE_RATE = 24000;
       const PCM_BYTES_PER_SAMPLE = 2;
       const AVATAR_SPEECH_BUFFER_MS = 1200;
+      const usageRequired = window.PAINTSCOPE_USAGE_TRACKING_REQUIRED === true;
+      const accessOrigins = new Set(
+        String(window.PAINTSCOPE_ACCESS_ORIGINS || window.location.origin)
+          .split(",")
+          .map((origin) => origin.trim())
+          .filter(Boolean)
+      );
+
+      window.addEventListener("message", (event) => {
+        if (!accessOrigins.has(event.origin)) return;
+        const data = event.data;
+        if (data?.type !== "paintscope:usage-session" || typeof data.usageSessionToken !== "string") return;
+        usageSessionToken = data.usageSessionToken;
+      });
 
       async function getAccessToken() {
         const response = await fetch(SUPABASE_FUNCTION_URL, {
@@ -428,7 +445,7 @@
           headers: {
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({ sessionInfo })
+          body: JSON.stringify({ sessionInfo, usageSessionToken })
         });
 
         if (!response.ok) {
@@ -752,6 +769,29 @@
         }
       }
 
+      async function reportUsage({ unloading = false } = {}) {
+        if (!currentSessionId || usageReported) return;
+        const url = `${LIVEKIT_AGENT_SERVER_URL}/sessions/${encodeURIComponent(currentSessionId)}/usage`;
+        usageReported = true;
+        if (unloading && navigator.sendBeacon) {
+          navigator.sendBeacon(url, JSON.stringify({}));
+          return;
+        }
+        try {
+          const response = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+            keepalive: true
+          });
+          if (!response.ok) throw new Error(`Usage report failed: ${response.status}`);
+        } catch (error) {
+          // The server-side idempotency key makes a later retry safe.
+          usageReported = false;
+          console.warn("Could not report AI usage:", error);
+        }
+      }
+
       function setStatus(message) {
         statusEl.textContent = message;
       }
@@ -892,6 +932,7 @@
         });
 
         activeSession.on(SessionEvent.SESSION_STREAM_READY, async () => {
+          usageReadyAt = new Date().toISOString();
           emptyState.hidden = true;
           activeSession.attach(avatarVideo);
 
@@ -903,6 +944,7 @@
         });
 
         activeSession.on(SessionEvent.SESSION_DISCONNECTED, () => {
+          void reportUsage();
           handleSessionEnded();
         });
 
@@ -912,6 +954,7 @@
         activeSession.on(AgentEventsEnum.AVATAR_TRANSCRIPTION, () => {});
 
         activeSession.on(AgentEventsEnum.SESSION_STOPPED, () => {
+          void reportUsage();
           handleSessionEnded();
         });
 
@@ -925,6 +968,12 @@
       async function startSession() {
         clearTranscript();
         sessionEnding = false;
+        usageReported = false;
+        usageReadyAt = null;
+        if (usageRequired && !usageSessionToken) {
+          setStatus("Verified training access is required");
+          return;
+        }
         setButtons(false, true);
         setStatus("Requesting token");
 
@@ -962,6 +1011,7 @@
         setButtons(true, true);
         setStatus("Ending");
         stopAudioCapture();
+        await reportUsage();
         await stopLiveKitAgent();
 
         try {
@@ -992,6 +1042,7 @@
 
       window.addEventListener("pagehide", () => {
         if (turns.length || transcriptText) saveTranscript();
+        void reportUsage({ unloading: true });
       });
 
       loadSavedTranscript();

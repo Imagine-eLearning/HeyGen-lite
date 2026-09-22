@@ -5,15 +5,74 @@ import { WebSocket } from "ws";
 
 const PORT = Number(process.env.PORT || 8788);
 const sessions = new Map();
+const USAGE_TRACKING_ENABLED = process.env.USAGE_TRACKING_ENABLED === "true";
+const USAGE_ALLOWED_ORIGINS = new Set(
+  String(process.env.USAGE_ALLOWED_ORIGINS || "http://127.0.0.1:5173,http://localhost:5173")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
 
-function sendJson(res, status, body) {
-  res.writeHead(status, {
-    "Access-Control-Allow-Origin": "*",
+function corsHeaders(req) {
+  const origin = String(req.headers.origin || "");
+  const headers = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    Vary: "Origin"
+  };
+  if (USAGE_ALLOWED_ORIGINS.has(origin)) headers["Access-Control-Allow-Origin"] = origin;
+  return headers;
+}
+
+function sendJson(req, res, status, body) {
+  res.writeHead(status, {
+    ...corsHeaders(req)
   });
   res.end(JSON.stringify(body));
+}
+
+async function callUsageFunction(url, body) {
+  const secret = process.env.AI_USAGE_INGEST_SECRET;
+  if (!secret) throw new Error("Usage tracking is not configured.");
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-ingest-secret": secret },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(String(payload.message || "Usage service request failed."));
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+async function bindUsageSession(sessionId, usageToken) {
+  if (!USAGE_TRACKING_ENABLED) return null;
+  if (!usageToken) {
+    const error = new Error("A verified usage session is required.");
+    error.status = 401;
+    throw error;
+  }
+  const url = process.env.SUPABASE_BIND_AI_USAGE_URL;
+  if (!url) throw new Error("Usage tracking is not configured.");
+  return callUsageFunction(url, { renderSessionId: sessionId, usageToken });
+}
+
+async function reportUsage(sessionRecord) {
+  if (!sessionRecord?.usage) {
+    const error = new Error("Usage tracking was not initialised for this session.");
+    error.status = 409;
+    throw error;
+  }
+  if (sessionRecord.usage.reported) return { duplicate: true, chargedSeconds: 0 };
+  const url = process.env.SUPABASE_RECORD_AI_USAGE_URL;
+  if (!url) throw new Error("Usage tracking is not configured.");
+  const result = await callUsageFunction(url, { sessionId: sessionRecord.id });
+  sessionRecord.usage.reported = true;
+  return result;
 }
 
 function readJson(req) {
@@ -134,7 +193,7 @@ function chunkPcmBase64(audioBase64) {
   return chunks;
 }
 
-async function joinSession(sessionInfo) {
+async function joinSession(sessionInfo, usageToken) {
   const sessionId = sessionInfo?.session_id;
   const livekitUrl = sessionInfo?.livekit_url;
   const livekitAgentToken = sessionInfo?.livekit_agent_token;
@@ -148,6 +207,7 @@ async function joinSession(sessionInfo) {
 
   const existing = sessions.get(sessionId);
   if (existing) {
+    if (USAGE_TRACKING_ENABLED && !existing.usage) existing.usage = await bindUsageSession(sessionId, usageToken);
     return existing;
   }
 
@@ -159,7 +219,8 @@ async function joinSession(sessionInfo) {
     room: new Room(),
     ws: null,
     connectedAt: new Date().toISOString(),
-    keepAliveTimer: null
+    keepAliveTimer: null,
+    usage: null
   };
 
   await Promise.all([
@@ -168,6 +229,7 @@ async function joinSession(sessionInfo) {
   ]);
 
   sessionRecord.connectedAt = new Date().toISOString();
+  sessionRecord.usage = await bindUsageSession(sessionId, usageToken);
 
   sessionRecord.room
     .on(RoomEvent.ParticipantConnected, (participant) => {
@@ -240,7 +302,7 @@ async function closeSession(sessionId) {
 
 const server = createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
-    sendJson(res, 200, { ok: true });
+    sendJson(req, res, 200, { ok: true });
     return;
   }
 
@@ -248,17 +310,17 @@ const server = createServer(async (req, res) => {
 
   try {
     if (req.method === "GET" && url.pathname === "/health") {
-      sendJson(res, 200, {
+      sendJson(req, res, 200, {
         ok: true,
-        sessions: Array.from(sessions.keys())
+        sessionCount: sessions.size
       });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/sessions") {
       const body = await readJson(req);
-      const sessionRecord = await joinSession(body.sessionInfo || body);
-      sendJson(res, 200, {
+      const sessionRecord = await joinSession(body.sessionInfo || body, body.usageSessionToken);
+      sendJson(req, res, 200, {
         success: true,
         sessionId: sessionRecord.id
       });
@@ -269,31 +331,42 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && speakMatch) {
       const body = await readJson(req);
       if (!body.audioBase64) {
-        sendJson(res, 400, { error: "Missing audioBase64." });
+        sendJson(req, res, 400, { error: "Missing audioBase64." });
         return;
       }
 
       const result = await speak(decodeURIComponent(speakMatch[1]), body.audioBase64);
-      sendJson(res, 200, {
+      sendJson(req, res, 200, {
         success: true,
         eventId: result.eventId
       });
       return;
     }
 
-    const sessionMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
-    if (req.method === "DELETE" && sessionMatch) {
-      await closeSession(decodeURIComponent(sessionMatch[1]));
-      sendJson(res, 200, { success: true });
+    const usageMatch = url.pathname.match(/^\/sessions\/([^/]+)\/usage$/);
+    if (req.method === "POST" && usageMatch) {
+      const sessionRecord = sessions.get(decodeURIComponent(usageMatch[1]));
+      if (!sessionRecord) {
+        sendJson(req, res, 409, { error: "Usage session is no longer active." });
+        return;
+      }
+      const result = await reportUsage(sessionRecord);
+      sendJson(req, res, 200, { success: true, ...result });
       return;
     }
 
-    sendJson(res, 404, { error: "Not found." });
+    const sessionMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
+    if (req.method === "DELETE" && sessionMatch) {
+      await closeSession(decodeURIComponent(sessionMatch[1]));
+      sendJson(req, res, 200, { success: true });
+      return;
+    }
+
+    sendJson(req, res, 404, { error: "Not found." });
   } catch (error) {
     console.error(error);
-    sendJson(res, 500, {
-      error: error instanceof Error ? error.message : "Internal server error"
-    });
+    const status = Number(error?.status) || 500;
+    sendJson(req, res, status, { error: status < 500 ? error.message : "Unable to process the request." });
   }
 });
 
