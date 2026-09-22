@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 
 const PORT = Number(process.env.PORT || 8788);
+const MAX_SESSION_MS = 15 * 60 * 1000;
 const sessions = new Map();
 const USAGE_TRACKING_ENABLED = process.env.USAGE_TRACKING_ENABLED === "true";
 const USAGE_ALLOWED_ORIGINS = new Set(
@@ -220,6 +221,7 @@ async function joinSession(sessionInfo, usageToken) {
     ws: null,
     connectedAt: new Date().toISOString(),
     keepAliveTimer: null,
+    sessionLimitTimer: null,
     usage: null
   };
 
@@ -250,6 +252,15 @@ async function joinSession(sessionInfo, usageToken) {
       console.warn(`[${sessionId}] keep_alive failed:`, error.message);
     }
   }, 60000);
+
+  // The browser shows the same countdown, but this server timer is the
+  // authoritative backstop if a learner leaves the WebObject open.
+  sessionRecord.sessionLimitTimer = setTimeout(() => {
+    console.log(`[${sessionId}] 15-minute avatar limit reached.`);
+    reportUsage(sessionRecord)
+      .catch((error) => console.error(`[${sessionId}] usage report at limit failed:`, error.message))
+      .finally(() => closeSession(sessionId).catch((error) => console.error(error)));
+  }, MAX_SESSION_MS);
 
   sessions.set(sessionId, sessionRecord);
   console.log(`[${sessionId}] LiveAvatar LITE agent joined.`);
@@ -289,6 +300,9 @@ async function closeSession(sessionId) {
 
   if (sessionRecord.keepAliveTimer) {
     clearInterval(sessionRecord.keepAliveTimer);
+  }
+  if (sessionRecord.sessionLimitTimer) {
+    clearTimeout(sessionRecord.sessionLimitTimer);
   }
 
   if (sessionRecord.ws && sessionRecord.ws.readyState === WebSocket.OPEN) {
