@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 
 const PORT = Number(process.env.PORT || 8788);
-const MAX_SESSION_MS = 15 * 60 * 1000;
+const MAX_SESSION_MS = 5 * 60 * 1000;
 const sessions = new Map();
 const USAGE_TRACKING_ENABLED = process.env.USAGE_TRACKING_ENABLED === "true";
 const USAGE_ALLOWED_ORIGINS = new Set(
@@ -257,10 +257,8 @@ async function joinSession(sessionInfo, usageToken) {
   // The browser shows the same countdown, but this server timer is the
   // authoritative backstop if a learner leaves the WebObject open.
   sessionRecord.sessionLimitTimer = setTimeout(() => {
-    console.log(`[${sessionId}] 15-minute avatar limit reached.`);
-    reportUsage(sessionRecord)
-      .catch((error) => console.error(`[${sessionId}] usage report at limit failed:`, error.message))
-      .finally(() => closeSession(sessionId).catch((error) => console.error(error)));
+    console.log(`[${sessionId}] 5-minute avatar limit reached.`);
+    closeSession(sessionId).catch((error) => console.error(error));
   }, MAX_SESSION_MS);
 
   sessions.set(sessionId, sessionRecord);
@@ -304,6 +302,14 @@ async function closeSession(sessionId) {
   if (!sessionRecord) return;
 
   sessions.delete(sessionId);
+
+  if (sessionRecord.usage && !sessionRecord.usage.reported) {
+    try {
+      await reportUsage(sessionRecord);
+    } catch (error) {
+      console.error(`[${sessionId}] usage report at session close failed:`, error.message);
+    }
+  }
 
   if (sessionRecord.keepAliveTimer) {
     clearInterval(sessionRecord.keepAliveTimer);
