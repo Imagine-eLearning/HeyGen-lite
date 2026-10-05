@@ -222,7 +222,8 @@ async function joinSession(sessionInfo, usageToken) {
     connectedAt: new Date().toISOString(),
     keepAliveTimer: null,
     sessionLimitTimer: null,
-    usage: null
+    usage: null,
+    speechEventId: null
   };
 
   await Promise.all([
@@ -267,7 +268,7 @@ async function joinSession(sessionInfo, usageToken) {
   return sessionRecord;
 }
 
-async function speak(sessionId, audioBase64) {
+async function speak(sessionId, audioBase64, endOfResponse = false) {
   const sessionRecord = sessions.get(sessionId);
   if (!sessionRecord) {
     throw new Error(`No active LiveAvatar agent session for ${sessionId}.`);
@@ -275,23 +276,29 @@ async function speak(sessionId, audioBase64) {
 
   await connectSessionWebSocket(sessionRecord);
 
-  const eventId = randomUUID();
-  for (const audio of chunkPcmBase64(audioBase64)) {
-    sendSessionCommand(sessionRecord, {
-      type: "agent.speak",
-      event_id: eventId,
-      audio
-    });
+  const eventId = sessionRecord.speechEventId || randomUUID();
+  sessionRecord.speechEventId = eventId;
+
+  if (audioBase64) {
+    for (const audio of chunkPcmBase64(audioBase64)) {
+      sendSessionCommand(sessionRecord, {
+        type: "agent.speak",
+        event_id: eventId,
+        audio
+      });
+    }
   }
 
-  sendSessionCommand(sessionRecord, {
-    type: "agent.speak_end",
-    event_id: eventId
-  });
+  if (endOfResponse) {
+    sendSessionCommand(sessionRecord, {
+      type: "agent.speak_end",
+      event_id: eventId
+    });
+    sessionRecord.speechEventId = null;
+  }
 
   return { eventId };
 }
-
 async function closeSession(sessionId) {
   const sessionRecord = sessions.get(sessionId);
   if (!sessionRecord) return;
@@ -344,19 +351,23 @@ const server = createServer(async (req, res) => {
     const speakMatch = url.pathname.match(/^\/sessions\/([^/]+)\/speak$/);
     if (req.method === "POST" && speakMatch) {
       const body = await readJson(req);
-      if (!body.audioBase64) {
-        sendJson(req, res, 400, { error: "Missing audioBase64." });
+      const endOfResponse = body.endOfResponse === true;
+      if (!body.audioBase64 && !endOfResponse) {
+        sendJson(req, res, 400, { error: "Missing audioBase64 or endOfResponse." });
         return;
       }
 
-      const result = await speak(decodeURIComponent(speakMatch[1]), body.audioBase64);
+      const result = await speak(
+        decodeURIComponent(speakMatch[1]),
+        body.audioBase64 || null,
+        endOfResponse
+      );
       sendJson(req, res, 200, {
         success: true,
         eventId: result.eventId
       });
       return;
     }
-
     const usageMatch = url.pathname.match(/^\/sessions\/([^/]+)\/usage$/);
     if (req.method === "POST" && usageMatch) {
       const sessionRecord = sessions.get(decodeURIComponent(usageMatch[1]));
