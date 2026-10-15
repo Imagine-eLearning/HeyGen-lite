@@ -208,7 +208,7 @@ async function joinSession(sessionInfo, usageToken) {
 
   const existing = sessions.get(sessionId);
   if (existing) {
-    if (USAGE_TRACKING_ENABLED && !existing.usage) existing.usage = await bindUsageSession(sessionId, usageToken);
+    if (usageToken && !existing.pendingUsageToken) existing.pendingUsageToken = usageToken;
     return existing;
   }
 
@@ -222,7 +222,9 @@ async function joinSession(sessionInfo, usageToken) {
     connectedAt: new Date().toISOString(),
     keepAliveTimer: null,
     sessionLimitTimer: null,
-    usage: null
+    usage: null,
+    usagePromise: null,
+    pendingUsageToken: usageToken || null
   };
 
   await Promise.all([
@@ -231,15 +233,13 @@ async function joinSession(sessionInfo, usageToken) {
   ]);
 
   sessionRecord.connectedAt = new Date().toISOString();
-  sessionRecord.usage = await bindUsageSession(sessionId, usageToken);
-
   sessionRecord.room
     .on(RoomEvent.ParticipantConnected, (participant) => {
       console.log(`[${sessionId}] participant connected: ${participant.identity}`);
     })
     .on(RoomEvent.Disconnected, (reason) => {
       console.log(`[${sessionId}] LiveKit room disconnected: ${reason || "unknown"}`);
-      closeSession(sessionId).catch((error) => console.error(error));
+      finishSession(sessionId).catch((error) => console.error(error));
     });
 
   sessionRecord.keepAliveTimer = setInterval(() => {
@@ -257,7 +257,7 @@ async function joinSession(sessionInfo, usageToken) {
   // authoritative backstop if a learner leaves the WebObject open.
   sessionRecord.sessionLimitTimer = setTimeout(() => {
     console.log(`[${sessionId}] 15-minute avatar limit reached.`);
-    reportUsage(sessionRecord)
+    (sessionRecord.usage ? reportUsage(sessionRecord) : Promise.resolve())
       .catch((error) => console.error(`[${sessionId}] usage report at limit failed:`, error.message))
       .finally(() => closeSession(sessionId).catch((error) => console.error(error)));
   }, MAX_SESSION_MS);
@@ -265,6 +265,36 @@ async function joinSession(sessionInfo, usageToken) {
   sessions.set(sessionId, sessionRecord);
   console.log(`[${sessionId}] LiveAvatar LITE agent joined.`);
   return sessionRecord;
+}
+
+async function startUsage(sessionId, usageToken) {
+  const sessionRecord = sessions.get(sessionId);
+  if (!sessionRecord) {
+    const error = new Error("LiveAvatar session is no longer active.");
+    error.status = 409;
+    throw error;
+  }
+  if (sessionRecord.usage) return sessionRecord.usage;
+  if (sessionRecord.usagePromise) return sessionRecord.usagePromise;
+  const token = usageToken || sessionRecord.pendingUsageToken;
+  sessionRecord.usagePromise = bindUsageSession(sessionId, token);
+  try {
+    sessionRecord.usage = await sessionRecord.usagePromise;
+    sessionRecord.pendingUsageToken = null;
+    return sessionRecord.usage;
+  } finally {
+    sessionRecord.usagePromise = null;
+  }
+}
+
+async function finishSession(sessionId) {
+  const sessionRecord = sessions.get(sessionId);
+  try {
+    if (sessionRecord?.usagePromise) await sessionRecord.usagePromise;
+    if (sessionRecord?.usage) await reportUsage(sessionRecord);
+  } finally {
+    await closeSession(sessionId);
+  }
 }
 
 async function speak(sessionId, audioBase64) {
@@ -357,6 +387,14 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    const connectedMatch = url.pathname.match(/^\/sessions\/([^/]+)\/connected$/);
+    if (req.method === "POST" && connectedMatch) {
+      const body = await readJson(req);
+      await startUsage(decodeURIComponent(connectedMatch[1]), body.usageSessionToken);
+      sendJson(req, res, 200, { success: true });
+      return;
+    }
+
     const usageMatch = url.pathname.match(/^\/sessions\/([^/]+)\/usage$/);
     if (req.method === "POST" && usageMatch) {
       const sessionRecord = sessions.get(decodeURIComponent(usageMatch[1]));
@@ -371,7 +409,7 @@ const server = createServer(async (req, res) => {
 
     const sessionMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
     if (req.method === "DELETE" && sessionMatch) {
-      await closeSession(decodeURIComponent(sessionMatch[1]));
+      await finishSession(decodeURIComponent(sessionMatch[1]));
       sendJson(req, res, 200, { success: true });
       return;
     }

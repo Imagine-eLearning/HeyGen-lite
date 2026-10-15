@@ -19,8 +19,11 @@ npm start
 
 Usage tracking is disabled unless `USAGE_TRACKING_ENABLED=true`. When enabled,
 the browser must supply an opaque, short-lived usage token issued only after
-PaintScope access verification. The token is sent to Render once to bind it to
-the LiveAvatar session; no secret is present in browser code.
+PaintScope access verification. The initial `/sessions` bootstrap retains the
+token without starting the usage clock. After LiveAvatar and ElevenLabs are
+connected, the browser calls `/sessions/:id/connected`; only then does Render
+bind the existing usage authorisation. A failed provider bootstrap is deleted
+without a usage bind or charge. No secret is present in browser code.
 
 Configure these Render secrets:
 
