@@ -375,6 +375,13 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && speakMatch) {
       const body = await readJson(req);
       if (!body.audioBase64) {
+        // The browser sends an empty end-of-response sentinel after a reply or
+        // interruption. Each audio batch has already been closed by speak(), so
+        // acknowledge that sentinel without forwarding an empty PCM payload.
+        if (body.endOfResponse === true) {
+          sendJson(req, res, 200, { success: true, ended: true });
+          return;
+        }
         sendJson(req, res, 400, { error: "Missing audioBase64." });
         return;
       }
